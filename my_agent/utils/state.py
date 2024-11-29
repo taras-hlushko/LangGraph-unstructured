@@ -1,6 +1,7 @@
-from langgraph.graph import add_messages
-from langchain_core.messages import BaseMessage
-from typing import TypedDict, Annotated, Sequence
+from typing import TypedDict, Optional, List, Any
 
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages]
+class AgentState(TypedDict, total=False):
+    url: str  # The input URL
+    elements: Optional[List[Any]]  # Raw elements from Unstructured.io
+    summarized_elements: Optional[List[dict]]  # Elements with their summaries
+    error: Optional[str]  # Any error messages
