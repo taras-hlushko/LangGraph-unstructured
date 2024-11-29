@@ -10,13 +10,11 @@ import uuid
 
 from my_agent.utils.state import AgentState
 
-# Initialize the client with proper configuration
 client = UnstructuredClient(
     api_key_auth=os.getenv("UNSTRUCTURED_API_KEY"),
     server_url=os.getenv("UNSTRUCTURED_API_URL"),
 )
 
-# Initialize OpenAI client
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Initialize Astra DB client
@@ -25,8 +23,7 @@ astra_client = DataAPIClient(os.getenv("ASTRA_DB_TOKEN"))
 # Get the database instance
 db = astra_client.get_database(os.getenv("ASTRA_DB_ENDPOINT"))
 
-# Update the collection name and creation
-collection_name = "vectorized_summaries"  # New collection name
+collection_name = "vectorized_summaries" 
 try:
     # Create collection with vector search enabled and correct dimensions
     collection = db.create_collection(
@@ -36,7 +33,6 @@ try:
     )
     print(f"Created new collection: {collection_name}")
 except Exception as e:
-    # Collection might already exist
     collection = db.get_collection(collection_name)
     print(f"Using existing collection: {collection_name}")
 
@@ -64,7 +60,7 @@ async def fetch_and_process(state: Annotated[AgentState, "state"]) -> AgentState
         # Process with Unstructured.io API asynchronously
         result = await client.general.partition_async(request=req)
         
-        # Immediately process elements and create summaries
+        # Process elements and create summaries
         summarized_elements = []
         for elem in result.elements:
             if isinstance(elem, dict) and "text" in elem:
