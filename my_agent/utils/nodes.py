@@ -54,6 +54,10 @@ async def fetch_and_process(state: Annotated[AgentState, "state"]) -> AgentState
                     "file_name": state["url"].split("/")[-1],  # Extract filename from URL
                 },
                 "strategy": shared.Strategy.HI_RES,
+                "chunk_strategy": "by_title",
+                "max_characters": 2000,              
+                "multipage_sections": True,            
+                "combine_text_under_n_chars": 500, 
             }
         }
 
