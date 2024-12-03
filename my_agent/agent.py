@@ -1,21 +1,40 @@
+from typing import Dict, Any
 from langgraph.graph import StateGraph
-from my_agent.utils.nodes import fetch_and_process, display_results, save_to_astra
 from my_agent.utils.state import AgentState
+from my_agent.generate_topics_agent import generate_topics_graph
+from my_agent.store_doc_by_url_agent import store_doc_by_url_graph
 
-# Define the graph with state schema
-workflow = StateGraph(AgentState)
+def select_flow(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Route to the appropriate agent based on selection"""
+    # Pass through the URL while selecting the agent
+    flow_type = state.get("config", {}).get("flow_type", "store_doc_by_url")
+    return {
+        "flow": flow_type,
+        "url": state["url"]  # Ensure URL is passed through
+    }
 
-# Add nodes
-workflow.add_node("process", fetch_and_process)
-workflow.add_node("save", save_to_astra)
-workflow.add_node("display", display_results)
+# Create the main graph
+main_workflow = StateGraph(dict)
 
-# Define edges
-workflow.add_edge("process", "save")
-workflow.add_edge("save", "display")
+# Add the flow selection node
+main_workflow.add_node("select", select_flow)
+
+# Add the flows as nodes
+main_workflow.add_node("generate_topics", generate_topics_graph)
+main_workflow.add_node("store_doc_by_url", store_doc_by_url_graph)
+
+# Add conditional edges based on flow selection
+main_workflow.add_conditional_edges(
+    "select",
+    lambda x: x["flow"],
+    {
+        "generate_topics": "generate_topics",
+        "store_doc_by_url": "store_doc_by_url"
+    }
+)
 
 # Set entry point
-workflow.set_entry_point("process")
+main_workflow.set_entry_point("select")
 
 # Compile the graph
-graph = workflow.compile()
+graph = main_workflow.compile()

@@ -145,15 +145,16 @@ async def save_to_astra(state: Annotated[AgentState, "state"]) -> AgentState:
             )
             embedding_vector = embedding_response.data[0].embedding
 
-            # Prepare document with vector
+            # Prepare document with vector and metadata
             document = {
                 "_id": str(uuid.uuid4()),
                 "content": summary["content"],
-                "file_name": summary["file_name"],
-                "created_at": datetime.utcnow().isoformat(),
+                "metadata": {
+                    "source": state["url"]
+                },
                 "$vector": embedding_vector  # This is the special field name for vectors in Astra DB
             }
-            
+            print("!!!!!!Saving document:", document)
             collection.insert_one(document)
         
         print("Successfully saved vectorized elements to Astra DB")
@@ -163,3 +164,117 @@ async def save_to_astra(state: Annotated[AgentState, "state"]) -> AgentState:
         print(f"Error saving to Astra DB: {str(e)}")
         state["error"] = str(e)
         return state
+
+async def fetch_context_from_astra(url: str) -> str:
+    """Fetch context from Astra DB based on URL"""
+    try:
+        # Fetch context from Astra DB based on URL
+        query = {
+            "metadata.source": url
+        }
+        
+        # Get all documents matching the URL
+        documents = collection.find(query)
+        
+        # Combine all content from matching documents to form the context
+        context = ""
+        if documents:
+            context = "\n".join([doc.get("content", "") for doc in documents])
+        
+        if not context:
+            raise ValueError(f"No content found in database for URL: {url}")
+            
+        return context
+
+    except Exception as e:
+        raise Exception(f"Error fetching context: {str(e)}")
+
+async def generate_curriculum_topics(state: Annotated[AgentState, "state"]) -> AgentState:
+    """Process curriculum generation request using OpenAI"""
+    try:
+        # Fetch context using the dedicated function
+        context = await fetch_context_from_astra(state["url"])
+
+        # Extract other parameters from the state
+        curriculum = state.get("curriculum", "")
+        main_topic = state.get("main_topic", "")
+        user_input = state.get("user_input", "")
+
+        # Construct the prompt
+        prompt = f"""# Objective
+
+You are a specialized assistant designed to help with curriculum development tasks. Your primary responsibility is to assist in expanding half-complete curriculums by suggesting additional subtopics for each specified topic, thus helping users create a more comprehensive curriculum structure.
+
+## Task
+
+Your main task is to suggest candidates for subtopics that can be included in an existing curriculum or that can form the basis for it. For this, you will be provided with next details from the user:
+- Context: content of the document (book, article, etc.) user generates curriculum for. You must take it as ground truth and use only it while generating curriculum expansion
+- USE ONLY CONTEXT PROVIDED BELOW AS A GROUND SOURCE!
+- Curriculum: current state of curriculum (can be empty)
+- Main topic: user can ask us to expand some specific topic from the curriculum. So, if "Main topic" is provided - your task is to generate additional subtopics specifically for this topic
+- User requirements: user can provide some specification how to do task correctly (for example, how much subtopics to generate)
+
+## Response format
+
+Your response must be in JSON format, structured as follows:
+{{
+  "topics": [
+    {{
+      "title": "Topic Title",
+      "description": "A clear description of what this topic covers"
+    }}
+  ]
+}}
+
+## Notes
+
+- The suggested subtopics should be relevant and logically connected to the main topic.
+- Each subtopic must include a clear description explaining its content and relevance.
+- Ensure that all suggestions are clear and concise.
+- Maintain consistency with the existing curriculum style and depth.
+- The descriptions should be informative yet concise, typically 1-3 sentences.
+- Maintain hierarchical relationships between topics and subtopics.
+
+## Instructions
+
+1. Ensure clarity and relevance in all suggested topics/subtopics.
+2. You must take into account current user curriculum to better complete it based on given topics.
+
+## Context (USE ONLY CONTEXT PROVIDED BELOW AS A GROUND SOURCE!):
+
+{context}
+
+## Current curriculum
+
+{curriculum}
+
+## Main Topic:
+
+{main_topic}
+
+## User requirements
+
+{user_input}
+"""
+
+        response = await openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[
+                {"role": "system", "content": "You are a curriculum development assistant that always responds in valid JSON format."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={ "type": "json_object" }
+        )
+        
+        content = response.choices[0].message.content
+        
+        return {
+            "url": state["url"],
+            "topic_summaries": content
+        }
+
+    except Exception as e:
+        return {
+            "url": state["url"],
+            "error": f"Error processing curriculum: {str(e)}"
+        }
