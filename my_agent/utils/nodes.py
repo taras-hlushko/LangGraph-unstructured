@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 from astrapy import DataAPIClient
 from datetime import datetime
 import uuid
+import asyncio  # Add this import at the top of the file
 
 from my_agent.utils.state import AgentState
 
@@ -36,6 +37,24 @@ except Exception as e:
     collection = db.get_collection(collection_name)
     print(f"Using existing collection: {collection_name}")
 
+async def process_element(elem):
+    """Helper function to process a single element"""
+    if isinstance(elem, dict) and "text" in elem and elem["text"].strip():  # Check if text exists and is not empty
+        response = await openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Please provide a concise summary of the following text:"},
+                {"role": "user", "content": elem["text"]}
+            ],
+            max_tokens=300
+        )
+        
+        return {
+            "content": response.choices[0].message.content,
+            "file_name": elem.get("metadata", {}).get("filename", "unknown")
+        }
+    return None
+
 async def fetch_and_process(state: Annotated[AgentState, "state"]) -> AgentState:
     """Fetch content from URL and process with Unstructured.io API"""
     try:
@@ -64,24 +83,9 @@ async def fetch_and_process(state: Annotated[AgentState, "state"]) -> AgentState
         # Process with Unstructured.io API asynchronously
         result = await client.general.partition_async(request=req)
         
-        # Process elements and create summaries
-        summarized_elements = []
-        for elem in result.elements:
-            if isinstance(elem, dict) and "text" in elem:
-                response = await openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "Please provide a concise summary of the following text:"},
-                        {"role": "user", "content": elem["text"]}
-                    ],
-                    max_tokens=300
-                )
-                
-                summarized_element = {
-                    "content": response.choices[0].message.content,
-                    "file_name": elem.get("metadata", {}).get("filename", "unknown")
-                }
-                summarized_elements.append(summarized_element)
+        # Process elements concurrently
+        tasks = [process_element(elem) for elem in result.elements]
+        summarized_elements = [elem for elem in await asyncio.gather(*tasks) if elem is not None]
         
         # Return only url and summarized_elements
         return {"url": state["url"], "summarized_elements": summarized_elements}
@@ -135,29 +139,43 @@ async def display_results(state: Annotated[AgentState, "state"]) -> AgentState:
         print("!!!!!!Summarized elements:", summaries)
     return state
 
+async def process_summary_for_astra(summary, url):
+    """Helper function to process a single summary for Astra DB"""
+    try:
+        # Generate embedding for the content
+        embedding_response = await openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=summary["content"]
+        )
+        embedding_vector = embedding_response.data[0].embedding
+
+        # Prepare document with vector and metadata
+        document = {
+            "_id": str(uuid.uuid4()),
+            "content": summary["content"],
+            "metadata": {
+                "source": url
+            },
+            "$vector": embedding_vector
+        }
+        return document
+    except Exception as e:
+        print(f"Error processing summary: {str(e)}")
+        return None
+
 async def save_to_astra(state: Annotated[AgentState, "state"]) -> AgentState:
     """Save vectorized summarized elements to Astra DB"""
     try:
         if "summarized_elements" not in state:
             raise ValueError("No summarized elements to save.")
         
-        for summary in state["summarized_elements"]:
-            # Generate embedding for the content
-            embedding_response = await openai_client.embeddings.create(
-                model="text-embedding-3-small",
-                input=summary["content"]
-            )
-            embedding_vector = embedding_response.data[0].embedding
-
-            # Prepare document with vector and metadata
-            document = {
-                "_id": str(uuid.uuid4()),
-                "content": summary["content"],
-                "metadata": {
-                    "source": state["url"]
-                },
-                "$vector": embedding_vector  # This is the special field name for vectors in Astra DB
-            }
+        # Process all summaries concurrently
+        tasks = [process_summary_for_astra(summary, state["url"]) 
+                for summary in state["summarized_elements"]]
+        documents = [doc for doc in await asyncio.gather(*tasks) if doc is not None]
+        
+        # Insert all documents
+        for document in documents:
             print("!!!!!!Saving document:", document)
             collection.insert_one(document)
         
